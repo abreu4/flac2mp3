@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# https://github.com/jasontbradshaw/flac2mp3
 
 from itertools import compress
 import multiprocessing as mp
@@ -8,6 +9,7 @@ import shutil
 import subprocess as sp
 import sys
 import tempfile
+import fleep
 
 def get_missing_programs(required_programs):
     '''Gets a list of required programs that can't be found on the system.'''
@@ -17,7 +19,7 @@ def get_missing_programs(required_programs):
     for program in required_programs:
         try:
             sp.call(program, stdout=sp.PIPE, stderr=sp.STDOUT)
-        except OSError, e:
+        except OSError:
             # if the binary couldn't be found, put it in the list
             if e.errno == 2:
                 missing.append(program)
@@ -37,11 +39,8 @@ def ensure_directory(d, ignore_errors=False):
     try:
         os.makedirs(d)
         return True
-    except OSError, e:
-        # propogate the error if it DOESN'T indicate that the directory already
-        # exists.
-        if e.errno != 17 and not ignore_errors:
-            raise e
+    except OSError as e:
+        raise(e)
         return False
 
 def change_file_ext(fname, ext):
@@ -65,6 +64,7 @@ def walk_dir(d, follow_links=False):
 def get_filetype(fname):
     '''Takes a file name and returns its MIME type.'''
 
+    """
     # brief output, MIME version
     file_args = ['file', '-b']
     if sys.platform == 'darwin':
@@ -76,6 +76,11 @@ def get_filetype(fname):
     # return one item per line
     p_file = sp.Popen(file_args, stdout=sp.PIPE)
     return p_file.communicate()[0].strip()
+    """
+
+    with open(fname, "rb") as file:
+        info = fleep.get(file.read(128))
+        return info.mime
 
 def transcode(infile, outfile=None, skip_existing=False, bad_chars=''):
     '''
@@ -88,6 +93,8 @@ def transcode(infile, outfile=None, skip_existing=False, bad_chars=''):
     characters that should be removed from the output file name.  Returns the
     returncode of the lame process.
     '''
+
+    #print(f"infile: {infile}")
 
     # get a new file name for the mp3 if no output name was specified
     outfile = outfile or change_file_ext(infile, '.mp3')
@@ -108,7 +115,9 @@ def transcode(infile, outfile=None, skip_existing=False, bad_chars=''):
     # create the file in the same dir (and same filesystem) as the final target,
     # allowing us to use os.link rather than shutil.move later.
     dirname = os.path.dirname(outfile)
+
     with tempfile.NamedTemporaryFile(dir=dirname, suffix='.tmp') as temp_outfile:
+
         # get the tags from the input file
         flac_tags = get_tags(infile)
 
@@ -146,6 +155,7 @@ def transcode(infile, outfile=None, skip_existing=False, bad_chars=''):
     return retval
 
 def get_tags(infile):
+
     '''
     Gets the flac tags from the given file and returns them as a dict.  Ensures
     a minimun set of id3v2 tags is available, giving them default values if
@@ -155,7 +165,8 @@ def get_tags(infile):
     # get tag info text using 'metaflac'
     metaflac_args = ['metaflac', '--list', '--block-type=VORBIS_COMMENT', infile]
     p_metaflac = sp.Popen(metaflac_args, stdout=sp.PIPE)
-    metaflac_text = p_metaflac.communicate()[0]
+    metaflac_text = p_metaflac.communicate()[0].decode('utf-8')
+    #print(f"type for metaflac_text: {type(metaflac_text)}")
 
     # ensure all possible id3v2 tags start off with a default value
     tag_dict = {
@@ -173,6 +184,7 @@ def get_tags(infile):
     # tuples like ('TITLE', 'Misery'), then stores them in a dict.
     pattern = '\s+comment\[\d+\]:\s+([^=]+)=([^\n]+)\n'
 
+    # TODO: Fix error here
     # get the comment data from the obtained text
     for name, value in re.findall(pattern, metaflac_text):
         tag_dict[name.upper()] = value
@@ -186,12 +198,13 @@ if __name__ == '__main__':
 
     # parse arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument('files', metavar='FILES', type=str, nargs='+',
-            help='Files and/or directories to transcode')
-
+    parser.add_argument('-i', '--input-dir', type=os.path.abspath,
+            help='Directory with FLAC files')
+    
+    # TODO: Add -bd option for base directory
     # options and flags
-    parser.add_argument('-o', '--output-dir', type=os.path.abspath,
-            help='Directory to output transcoded files to')
+    #parser.add_argument('-o', '--output-dir', type=os.path.abspath,
+            #help='Directory to output transcoded files to', default='./MP3/')
     parser.add_argument('-s', '--skip-existing', action='store_true',
             help='Skip transcoding files if the output file already exists')
     parser.add_argument('-l', '--logfile', type=os.path.normpath, default=None,
@@ -201,10 +214,13 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--copy-pattern', type=re.compile,
             help="Copy files who's names match the given pattern into the " +
             'output directory. Only works if an output directory is specified.')
-    parser.add_argument('-n', '--num-threads', type=int, default=mp.cpu_count(),
+    parser.add_argument('-n', '--num-threads', type=int, default=1,#mp.cpu_count(),
             help='The number of threads to use for transcoding. Defaults ' +
             'to the number of CPUs on the machine.')
     args = parser.parse_args()
+
+    # setup output directory's name
+    output_dir_path = os.path.join(args.input_dir, 'MP3/')
 
     # set log level and format
     log = logging.getLogger('flac2mp3')
@@ -234,72 +250,53 @@ if __name__ == '__main__':
         log.critical('The following programs are required: ' + ','.join(missing))
         sys.exit(1)
 
+    
     # ensure the output directory exists
-    if args.output_dir is not None:
-        try:
-            ensure_directory(args.output_dir)
-        except OSError, e:
-            log.error("Couldn't create directory '%s'" % args.output_dir)
+    try:
+        ensure_directory(output_dir_path)
+    except OSError:
+        print("Couldn't create output directory at location {}".format(output_dir_path))    
 
-    # add all the files/directories in the args recursively
-    log.info('Enumerating files...')
-    files = set()
-    for f in args.files:
+    files = []
+    
+    for f in os.listdir(args.input_dir):
         if os.path.isdir(f):
-            files.update(walk_dir(f))
+            continue
+        elif (f.endswith('.flac')):
+            files.append(os.path.join(args.input_dir, f))
         else:
-            files.add(f)
+            continue
+
     log.info('Found ' + str(len(files)) + ' files')
+    print('\n'.join('{}'.format(k) for k in files))
 
-    # get the common prefix of all the files so we can preserve directory
-    # structure when an output directory is specified.
-    common_prefix = os.path.dirname(os.path.commonprefix(files))
 
+    # ------------------------------------------------------------------------
     def transcode_with_logging(f):
+
         '''Transcode the given file and print out progress statistics.'''
 
-        short_fname = os.path.basename(f)
+        short_fname = os.path.basename(os.path.normpath(f))
 
         # copy any non-FLAC files to the output dir if they match a pattern
-        if 'audio/x-flac' not in get_filetype(f):
-            if args.output_dir is not None and args.copy_pattern is not None:
-                match = args.copy_pattern.search(f)
-                if match is not None:
-                    dest = os.path.join(args.output_dir,
-                            f.replace(common_prefix, '').strip('/'))
-                    try:
-                        ensure_directory(os.path.dirname(dest))
-                        shutil.copy(f, dest)
-                        log.info("Copied '%s' ('%s' matched)", short_fname,
-                                match.group(0))
-                    except Exception, e:
-                        log.error("Failed to copy '%s' (%s)", short_fname,
-                                e.message)
-
-                    # we're done once we've attempted a copy
-                    return
-
-            log.info("Skipped '%s'", short_fname)
-
-            # never proceed further if the file wasn't a FLAC file
+        if 'audio/flac' not in get_filetype(f):
             return
 
         # a more compact file name representation
-        log.info("Transcoding '%s'..." % short_fname)
+        log.info("Transcoding {:}...".format(short_fname))
 
         # time the transcode
         start_time = time.time()
 
         # assign the output directory
         outfile = None
-        if args.output_dir is not None:
-            mp3file = change_file_ext(f, '.mp3')
-            outfile = os.path.join(args.output_dir,
-                    mp3file.replace(common_prefix, '').strip('/'))
+        mp3file = change_file_ext(short_fname, '.mp3')
+        outfile = os.path.join(output_dir_path,
+                    mp3file)
 
-            # make the directory to ensure it exists. ignore errors since
-            # lame takes care of other error messages.
-            ensure_directory(os.path.dirname(outfile), ignore_errors=True)
+        # make the directory to ensure it exists. ignore errors since
+        # lame takes care of other error messages.
+        #ensure_directory(os.path.dirname(outfile), ignore_errors=True)
 
         # store the return code of the process so we can see if it errored
         retcode = transcode(f, outfile, args.skip_existing, ':')
@@ -307,15 +304,17 @@ if __name__ == '__main__':
 
         # log success or error
         if retcode == 0:
-            log.info("Transcoded '%s' in %.2f seconds" % (short_fname,
+            log.info("Transcoded {} in {} seconds".format(short_fname,
                 total_time))
         elif retcode == None:
-            log.info("Skipped '%s'", short_fname)
+            log.info("Skipped {}".format(short_fname))
         else:
-            log.error("Failed to transcode '%s' after %.2f seconds" %
-                    (short_fname, total_time))
+            log.error("Failed to transcode {} after {}} seconds".format(short_fname, total_time))
 
+    # ------------------------------------------------------------------------
+    
     # log transcode status
+    # Start
     log.info('Beginning transcode of %d files...' % len(files))
     overall_start_time = time.time()
 
@@ -339,9 +338,10 @@ if __name__ == '__main__':
         terminated = True
         pool.terminate()
         pool.join()
-    except Exception, e:
+    except Exception as e:
         # catch and log all other exceptions gracefully
-        log.exception(e)
+        #log.exception(e)
+        print("Error, dummy: {:}".format(e))
 
     # log our exit status/condition
     overall_time = time.time() - overall_start_time
