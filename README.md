@@ -22,14 +22,9 @@ ensure they don't end up lumped illogically in the output directory.
 
 Simple Usage
 ----
-`python flac2mp3.py [-o OUTPUT_DIR] FILES [FILES ...]`
+`python flac2mp3.py [-i INPUT_DIR]`
 
-If no output directory is specified, the new MP3 files are stored in the same
-directories as their FLAC parents.
-
-Further options can be discovered through the `-h` or `--help` commands,
-including specifying the number of cores to use, a file to log console output
-to, and whether to overwrite existing files.
+Creates an `MP3/` directory inside the input folder, where it saves copies of all the converted FLAC files as `.mp3` files.
 
 Shortcomings
 ----
